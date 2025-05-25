@@ -1,0 +1,60 @@
+name: Node.js CI
+
+on:
+  push:
+    branches: ["main"]
+
+jobs:
+  build:
+    runs-on: self-hosted
+
+    strategy:
+      matrix:
+        node-version: [22.2.0]
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: "npm"
+
+      # Install dependencies
+      - run: npm ci
+
+      # Create a temporary directory and exclude it while copying the source files
+      - name: Build in a temporary directory
+        run: |
+          mkdir temp_build
+          rsync -av --exclude='temp_build' ./ temp_build/ # Exclude temp_build while copying
+          cd temp_build
+          npm run build --if-present
+
+      # Test if the build was successful
+      - name: Check if build succeeded
+        run: |
+          if [ -d "temp_build" ]; then
+            echo "Build succeeded, proceeding with deployment..."
+          else
+            echo "Build failed, stopping process."
+            exit 1
+          fi
+
+      # If the build was successful, deploy the new version
+      - name: Deploy new build
+        if: success()
+        run: |
+          rsync -av --exclude='temp_build' temp_build/ ./ # Exclude temp_build while copying back
+          rm -rf temp_build
+          if pm2 list | grep -q "frontend"; then
+            echo "PM2 process 'frontend' found. Restarting..."
+            pm2 restart frontend
+          else
+            echo "PM2 process 'frontend' not found. Starting..."
+            pm2 start npm --name frontend -- start -- --port 3000
+          fi
+
+      # Cleanup the temporary build directory
+      - name: Cleanup
+        run: rm -rf temp_build
